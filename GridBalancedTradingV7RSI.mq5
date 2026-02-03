@@ -143,10 +143,12 @@ GridLotSize gridLotSizes;                       // Lưu trữ lot size cho mỗi
 
 // Biến theo dõi profit
 double sessionProfit = 0.0;                     // Profit của phiên hiện tại (không dùng nữa, tính từ vốn)
-double accumulatedProfit = 0.0;                 // Profit tích lũy qua các lần reset
+double accumulatedProfit = 0.0;                 // Tích lũy = Balance hiện tại - Balance ban đầu khi EA khởi động
 datetime sessionStartTime = 0;                  // Thời gian bắt đầu phiên
 double initialEquity = 0.0;                     // Vốn ban đầu (Equity) khi bắt đầu phiên
 double initialBalance = 0.0;                    // Số dư ban đầu (Balance) khi bắt đầu phiên
+double initialBalanceAtStart = 0.0;              // Số dư ban đầu khi EA khởi động lần đầu (không reset khi EA reset)
+int resetCount = 0;                              // Số lần EA reset (tích lũy lần N)
 double minEquity = 0.0;                        // Vốn thấp nhất (khi lỗ lớn nhất) trong phiên
 double maxNegativeProfit = 0.0;                 // Số âm lớn nhất của lệnh đang mở (không reset khi EA reset)
 double balanceAtMaxLoss = 0.0;                  // Số dư tại thời điểm có số âm lớn nhất (không reset khi EA reset)
@@ -342,8 +344,10 @@ int OnInit()
    sessionStartTime = TimeCurrent();
    sessionProfit = 0.0;
    accumulatedProfit = 0.0;
+   resetCount = 0;  // Khởi tạo số lần reset = 0
    initialEquity = AccountInfoDouble(ACCOUNT_EQUITY);  // Lưu vốn ban đầu (Balance + Floating)
    initialBalance = AccountInfoDouble(ACCOUNT_BALANCE);  // Lưu số dư ban đầu
+   initialBalanceAtStart = AccountInfoDouble(ACCOUNT_BALANCE);  // Lưu số dư ban đầu khi EA khởi động lần đầu (không reset)
    minEquity = initialEquity;  // Khởi tạo vốn thấp nhất bằng vốn ban đầu
    maxNegativeProfit = 0.0;  // Khởi tạo số âm lớn nhất
    balanceAtMaxLoss = AccountInfoDouble(ACCOUNT_BALANCE);  // Khởi tạo số dư tại thời điểm lỗ lớn nhất
@@ -476,6 +480,9 @@ void OnTick()
    if(tickCount % 10 == 0)
    {
       UpdateTrackingInfo();
+      // Cập nhật tích lũy = Balance hiện tại - Balance ban đầu
+      double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      accumulatedProfit = currentBalance - initialBalanceAtStart;
    }
 }
 
@@ -569,13 +576,11 @@ void CheckTotalProfit()
    }
    
    // 3. Kiểm tra TP tổng tích lũy
-   // Tổng tích lũy = Profit tích lũy + Profit phiên hiện tại
-   // Profit phiên hiện tại = Vốn hiện tại - Vốn ban đầu
+   // Tổng tích lũy = Balance hiện tại - Balance ban đầu khi EA khởi động
    if(TotalProfitTPAccumulated > 0)
    {
-      double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
-      double sessionProfitCurrent = currentEquity - initialEquity;  // Profit phiên hiện tại
-      double totalAccumulated = accumulatedProfit + sessionProfitCurrent;
+      double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      double totalAccumulated = currentBalance - initialBalanceAtStart;  // Tích lũy = số dư tăng lên
       if(totalAccumulated >= TotalProfitTPAccumulated)
       {
          Print("========================================");
@@ -685,16 +690,29 @@ void ResetEA(string resetReason = "Thủ công")
    // Đánh dấu đang trong quá trình reset
    isResetting = true;
    
-   // Cộng profit của phiên hiện tại vào tích lũy trước khi reset
+   // Tính profit của phiên hiện tại
    // Profit phiên = Vốn hiện tại - Vốn ban đầu (lãi)
    double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
    double totalSessionProfit = currentEquity - initialEquity;
-   accumulatedProfit += totalSessionProfit;
+   
+   // Tính tích lũy = Balance hiện tại - Balance ban đầu khi EA khởi động lần đầu
+   double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double accumulatedProfitBefore = accumulatedProfit; // Lưu tích lũy trước reset
+   accumulatedProfit = currentBalance - initialBalanceAtStart; // Tích lũy = số dư tăng lên từ khi EA khởi động
+   double profitThisReset = accumulatedProfit - accumulatedProfitBefore; // Profit của lần reset này
    
    Print("Profit phiên trước reset: ", totalSessionProfit, " USD");
    Print("  - Vốn ban đầu: ", initialEquity, " USD");
    Print("  - Vốn hiện tại: ", currentEquity, " USD");
-   Print("Tổng tích lũy trước reset: ", accumulatedProfit, " USD");
+   Print("  - Số dư ban đầu (khi EA khởi động): ", initialBalanceAtStart, " USD");
+   Print("  - Số dư hiện tại: ", currentBalance, " USD");
+   // Tăng số lần reset
+   resetCount++;
+   
+   Print("Tích lũy trước reset: ", accumulatedProfitBefore, " USD");
+   Print("Tích lũy mới (số dư tăng): ", accumulatedProfit, " USD");
+   Print("Profit lần reset này: ", profitThisReset, " USD");
+   Print("Số lần tích lũy: ", resetCount);
    
    // Đóng tất cả pending orders
    CloseAllPendingOrders();
@@ -757,7 +775,6 @@ void ResetEA(string resetReason = "Thủ công")
    }
    
    Print("EA đã reset tại giá mới: ", basePrice);
-   Print("Tổng tích lũy sau reset: ", accumulatedProfit, " USD");
    Print("--- Reset phiên ---");
    Print("  - Vốn ban đầu cũ: ", oldInitialEquity, " USD");
    Print("  - Vốn ban đầu mới: ", initialEquity, " USD");
@@ -767,7 +784,7 @@ void ResetEA(string resetReason = "Thủ công")
    // Gửi thông báo về điện thoại nếu được bật
    if(EnableResetNotification)
    {
-      SendResetNotification(resetReason);
+      SendResetNotification(resetReason, accumulatedProfitBefore, profitThisReset, accumulatedProfit, resetCount);
    }
 }
 
@@ -2759,7 +2776,7 @@ string FormatMoney(double amount)
 //+------------------------------------------------------------------+
 //| Gửi thông báo về điện thoại khi EA reset                          |
 //+------------------------------------------------------------------+
-void SendResetNotification(string resetReason)
+void SendResetNotification(string resetReason, double accumulatedBefore, double profitThisTime, double accumulatedAfter, int resetNumber)
 {
    // 1. Biểu đồ
    string symbolName = _Symbol;
@@ -2779,11 +2796,15 @@ void SendResetNotification(string resetReason)
    // 5. Số lot lớn nhất / tổng lot lớn nhất
    string lotText = DoubleToString(maxLotEver, 2) + " / " + DoubleToString(totalLotEver, 2);
    
+   // 6. Tích lũy với số lần
+   string accumulatedText = "Tích lũy lần " + IntegerToString(resetNumber) + ": " + FormatMoney(accumulatedBefore) + " + " + FormatMoney(profitThisTime) + " = " + FormatMoney(accumulatedAfter);
+   
    // Tạo nội dung thông báo
    string message = "EA RESET\n";
    message += "Biểu đồ: " + symbolName + "\n";
    message += "Chức năng: " + functionName + "\n";
    message += "Số dư: " + balanceText + "\n";
+   message += accumulatedText + "\n";
    message += "Lỗ lớn nhất: " + maxLossText + "\n";
    message += "Lot: " + lotText;
    
